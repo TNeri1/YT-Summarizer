@@ -37,8 +37,5 @@
       "js": ["content/content.js"],
       "run_at": "document_idle"
     }
-  ],
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' https://cdn.jsdelivr.net; object-src 'self'"
-  }
+  ]
 }
