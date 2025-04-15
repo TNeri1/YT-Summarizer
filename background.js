@@ -36,6 +36,38 @@ chrome.runtime.onInstalled.addListener(function(details) {
   });
 });
 
+// Ensure the content script is injected into YouTube pages if not already
+async function ensureContentScriptInjected(tabId, url) {
+  // Only for YouTube pages
+  if (!url.includes('youtube.com')) return;
+
+  try {
+    // Check if content script is already injected by sending a test message
+    await chrome.tabs.sendMessage(tabId, { action: 'ping' });
+    console.log('Content script already running in tab', tabId);
+  } catch (error) {
+    console.log('Content script not detected, injecting...', error);
+    
+    // Inject the content script
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['content/content.js']
+      });
+      console.log('Content script injected successfully');
+    } catch (err) {
+      console.error('Failed to inject content script:', err);
+    }
+  }
+}
+
+// Listen for tab updates to inject content script when needed
+chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
+  if (changeInfo.status === 'complete' && tab.url) {
+    ensureContentScriptInjected(tabId, tab.url);
+  }
+});
+
 // Handle context menu clicks
 chrome.contextMenus.onClicked.addListener(function(info, tab) {
   if (info.menuItemId === 'summarizeYouTubeVideo') {
@@ -79,6 +111,28 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     return true;
   }
   
-  // Handle other message types as needed
+  // Handle direct summarization requests
+  if (request.action === 'summarizeDirectly') {
+    const videoId = request.videoId;
+    if (videoId) {
+      // Navigate to YouTube with this video
+      chrome.tabs.create({ 
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        active: true
+      }, function(tab) {
+        // Wait for navigation to complete then inject content script
+        setTimeout(async () => {
+          try {
+            await ensureContentScriptInjected(tab.id, tab.url);
+            sendResponse({success: true});
+          } catch (error) {
+            sendResponse({error: 'Failed to prepare for summarization'});
+          }
+        }, 1500);
+      });
+      return true;
+    }
+  }
+  
   return false;
 });

@@ -6,6 +6,9 @@
 
 // Global state for caching
 let transcriptCache = {};
+let isExtractingTranscript = false;
+let retryCount = 0;
+const MAX_RETRIES = 3;
 
 // Initialize when content script loads
 console.log('[YT-Summarizer] Content script loaded');
@@ -14,16 +17,41 @@ console.log('[YT-Summarizer] Content script loaded');
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   console.log('[YT-Summarizer] Received message:', request.action);
   
+  // Add a ping handler to let the background script verify the content script is loaded
+  if (request.action === 'ping') {
+    console.log('[YT-Summarizer] Ping received, responding with pong');
+    sendResponse({ status: 'pong' });
+    return true;
+  }
+  
   // Handle transcript retrieval
   if (request.action === 'getTranscript') {
+    if (isExtractingTranscript) {
+      console.log('[YT-Summarizer] Already extracting transcript, please wait');
+      sendResponse({ error: 'Already extracting transcript, please wait' });
+      return true;
+    }
+    
+    isExtractingTranscript = true;
+    retryCount = 0;
+    
     extractTranscript(request.videoId)
       .then(transcript => {
         console.log('[YT-Summarizer] Transcript extracted, segments:', transcript ? transcript.length : 0);
+        isExtractingTranscript = false;
         sendResponse({transcript: transcript});
       })
       .catch(error => {
         console.error('[YT-Summarizer] Error extracting transcript:', error);
-        sendResponse({error: error.message});
+        isExtractingTranscript = false;
+        
+        // Provide a more helpful error message
+        let errorMessage = error.message;
+        if (error.message.includes('not open') || error.message.includes('No transcript')) {
+          errorMessage = 'This video may not have captions available. Try a different video or check if captions are enabled.';
+        }
+        
+        sendResponse({error: errorMessage});
       });
     return true; // Required for async sendResponse
   }
@@ -78,7 +106,7 @@ async function extractTranscript(videoId) {
     
     // First, check if we're on a YouTube video page
     if (!window.location.href.includes('youtube.com/watch')) {
-      throw new Error('Not on a YouTube video page');
+      throw new Error('Not on a YouTube video page. Please navigate to the video first.');
     }
     
     // Try to extract transcript directly from page
@@ -91,27 +119,30 @@ async function extractTranscript(videoId) {
       // Find and click transcript button
       const transcriptButton = await findTranscriptButton();
       if (!transcriptButton) {
-        throw new Error('No transcript button found');
+        throw new Error('No transcript button found. This video may not have captions available.');
       }
       
       console.log('[YT-Summarizer] Clicking transcript button');
       transcriptButton.click();
       
-      // Wait for panel to appear
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait for panel to appear with more generous timeout
+      await waitForElement('ytd-transcript-renderer', 5000);
       transcriptPanel = document.querySelector('ytd-transcript-renderer');
       
       if (!transcriptPanel) {
-        throw new Error('Transcript panel did not open');
+        throw new Error('Transcript panel did not open. This video may not have captions available.');
       }
     }
     
     // Extract transcript segments
     const segments = [];
-    const transcriptItems = transcriptPanel.querySelectorAll('ytd-transcript-segment-renderer');
+    
+    // Wait for transcript items to load with a more generous timeout
+    await waitForElement('ytd-transcript-segment-renderer', 5000);
+    const transcriptItems = document.querySelectorAll('ytd-transcript-segment-renderer');
     
     if (!transcriptItems || transcriptItems.length === 0) {
-      throw new Error('No transcript segments found');
+      throw new Error('No transcript segments found. This video may not have captions available.');
     }
     
     console.log('[YT-Summarizer] Found transcript items:', transcriptItems.length);
@@ -144,7 +175,7 @@ async function extractTranscript(videoId) {
     });
     
     if (segments.length === 0) {
-      throw new Error('Failed to extract transcript segments');
+      throw new Error('Failed to extract transcript segments. This video may not have captions available.');
     }
     
     console.log('[YT-Summarizer] Extracted transcript segments:', segments.length);
@@ -157,6 +188,44 @@ async function extractTranscript(videoId) {
     console.error('[YT-Summarizer] Transcript extraction error:', error);
     throw error;
   }
+}
+
+/**
+ * Wait for an element to appear in the DOM
+ * @param {string} selector - CSS selector to wait for
+ * @param {number} timeout - Time to wait in ms
+ * @returns {Promise<Element>} - The element that appeared
+ */
+function waitForElement(selector, timeout = 3000) {
+  return new Promise((resolve, reject) => {
+    // Check if element already exists
+    const element = document.querySelector(selector);
+    if (element) {
+      return resolve(element);
+    }
+    
+    // Set a timeout to reject the promise
+    const timeoutId = setTimeout(() => {
+      observer.disconnect();
+      reject(new Error(`Timed out waiting for element: ${selector}`));
+    }, timeout);
+    
+    // Set up mutation observer to look for the element
+    const observer = new MutationObserver((mutations, obs) => {
+      const element = document.querySelector(selector);
+      if (element) {
+        clearTimeout(timeoutId);
+        obs.disconnect();
+        resolve(element);
+      }
+    });
+    
+    // Start observing
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  });
 }
 
 /**
