@@ -24,21 +24,30 @@ function initializePopup() {
   const modelStatusText = document.getElementById('model-status-text');
   const modelProgressValue = document.getElementById('model-progress-value');
   
+  // Check if elements exist before adding event listeners
+  if (!urlInput || !summarizeButton) {
+    console.error('[YT-Summarizer] Required DOM elements not found!');
+    displayError('Extension error: Required elements not found. Please try reloading the extension.');
+    return;
+  }
+  
   // Initialize model progress event listener
   window.addEventListener('model-progress', (event) => {
     const progress = event.detail;
-    modelInfo.style.display = 'block';
-    modelStatusText.textContent = progress.detail;
-    
-    // Update progress bar
-    const percentage = Math.round((progress.progress / progress.total) * 100);
-    modelProgressValue.style.width = `${percentage}%`;
-    
-    if (progress.status === 'ready' || progress.status === 'complete') {
-      // Hide after a delay when complete
-      setTimeout(() => {
-        modelInfo.style.display = 'none';
-      }, 3000);
+    if (modelInfo && modelStatusText && modelProgressValue) {
+      modelInfo.style.display = 'block';
+      modelStatusText.textContent = progress.detail;
+      
+      // Update progress bar
+      const percentage = Math.round((progress.progress / progress.total) * 100);
+      modelProgressValue.style.width = `${percentage}%`;
+      
+      if (progress.status === 'ready' || progress.status === 'complete') {
+        // Hide after a delay when complete
+        setTimeout(() => {
+          modelInfo.style.display = 'none';
+        }, 3000);
+      }
     }
   });
   
@@ -325,7 +334,9 @@ async function createSummary(transcript, videoId) {
       // Listen for model progress updates to show in UI
       window.addEventListener('model-progress', (event) => {
         const progress = event.detail;
-        loadingIndicator.textContent = progress.detail;
+        if (loadingIndicator) {
+          loadingIndicator.textContent = progress.detail;
+        }
       }, { once: false });
       
       // Wait for model to load
@@ -347,7 +358,9 @@ async function createSummary(transcript, videoId) {
       };
     } catch (aiError) {
       console.error('[YT-Summarizer] AI summarization failed:', aiError);
-      loadingIndicator.textContent = 'AI summarization failed, using fallback method...';
+      if (loadingIndicator) {
+        loadingIndicator.textContent = 'AI summarization failed, using fallback method...';
+      }
       
       // Fallback to TranscriptParser if AI fails
       if (window.TranscriptParser && typeof window.TranscriptParser.createSummary === 'function') {
@@ -374,10 +387,14 @@ function displaySummary(summary) {
   const loadingIndicator = document.getElementById('loading-indicator');
   
   // Hide loading indicator
-  loadingIndicator.style.display = 'none';
+  if (loadingIndicator) {
+    loadingIndicator.style.display = 'none';
+  }
   
   // Clear any previous content
-  summaryContainer.innerHTML = '';
+  if (summaryContainer) {
+    summaryContainer.innerHTML = '';
+  }
   
   // Create summary header
   const header = document.createElement('div');
@@ -390,7 +407,9 @@ function displaySummary(summary) {
     header.innerHTML = `<h2>${summary.title || 'Video Summary'}</h2>`;
   }
   
-  summaryContainer.appendChild(header);
+  if (summaryContainer) {
+    summaryContainer.appendChild(header);
+  }
   
   // Create summary content
   const content = document.createElement('div');
@@ -433,7 +452,9 @@ function displaySummary(summary) {
     content.appendChild(sectionElement);
   });
   
-  summaryContainer.appendChild(content);
+  if (summaryContainer) {
+    summaryContainer.appendChild(content);
+  }
   
   // Add copy button
   const copyButton = document.createElement('button');
@@ -443,10 +464,14 @@ function displaySummary(summary) {
     copySummaryToClipboard(summary);
   });
   
-  summaryContainer.appendChild(copyButton);
+  if (summaryContainer) {
+    summaryContainer.appendChild(copyButton);
+  }
   
   // Show the summary container
-  summaryContainer.style.display = 'block';
+  if (summaryContainer) {
+    summaryContainer.style.display = 'block';
+  }
 }
 
 /**
@@ -460,13 +485,19 @@ function displayError(message) {
   const loadingIndicator = document.getElementById('loading-indicator');
   
   // Hide loading indicator
-  loadingIndicator.style.display = 'none';
+  if (loadingIndicator) {
+    loadingIndicator.style.display = 'none';
+  }
   
   // Set error message
-  errorContainer.textContent = message;
+  if (errorContainer) {
+    errorContainer.textContent = message;
+  }
   
   // Show error container
-  errorContainer.style.display = 'block';
+  if (errorContainer) {
+    errorContainer.style.display = 'block';
+  }
 }
 
 /**

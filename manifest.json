@@ -37,5 +37,11 @@
       "js": ["content/content.js"],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/*"],
+      "matches": ["<all_urls>"]
+    }
   ]
 }

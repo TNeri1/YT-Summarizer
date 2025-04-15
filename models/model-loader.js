@@ -1,19 +1,16 @@
 /**
  * YT-Summarizer Model Handler
  * 
- * Manages the WebLLM integration and Llama model for client-side summarization
+ * Manages the WebLLM integration for client-side summarization
  */
 
-// ModelHandler class for managing the Llama model
+// ModelHandler class for managing the AI model
 class ModelHandler {
   constructor() {
     this.modelLoaded = false;
     this.modelLoading = false;
-    this.llm = null;
+    this.worker = null;
     this.modelConfig = {
-      modelId: "mlc-ai/llama-2-7b-chat-q4f16_1",
-      wasmUrl: "https://mlc.ai/mlc-llm/web-static/",
-      cacheUrl: "cache",
       maxTokens: 512,
       temperature: 0.7
     };
@@ -23,6 +20,8 @@ class ModelHandler {
       total: 100,
       detail: ""
     };
+    this.pendingRequests = new Map();
+    this.requestId = 0;
   }
 
   /**
@@ -30,50 +29,59 @@ class ModelHandler {
    * @returns {Promise<void>}
    */
   async initialize() {
-    if (!this.llm && !this.modelLoading) {
+    if (!this.worker && !this.modelLoading) {
       this.modelLoading = true;
-      this.updateProgress("loading", 0, 100, "Loading WebLLM...");
+      this.updateProgress("loading", 0, 100, "Setting up AI summarization...");
       
       try {
-        // Use a more secure approach for WebLLM loading
-        // Instead of dynamically loading external script, include it in the package
-        // For now we'll simulate the API as a fallback for development
+        // Create a Web Worker for the AI processing
+        this.worker = new Worker(chrome.runtime.getURL('lib/webllm-worker.js'));
         
-        // Show simulated loading progress
-        for (let i = 1; i <= 5; i++) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-          this.updateProgress(
-            "loading", 
-            i * 20, 
-            100, 
-            `Loading AI model (simulated) (${i * 20}%)`
-          );
-        }
-        
-        // Create mock LLM instance for development
-        this.llm = {
-          chat: async ({ message }) => {
-            console.log("[YT-Summarizer] Simulating AI chat with message:", message);
-            // Wait to simulate processing
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // Extract video title if available
-            const titleMatch = message.match(/VIDEO TITLE:\s*([^\n]+)/);
-            const videoTitle = titleMatch ? titleMatch[1] : "YouTube Video";
-            
-            // Generate a simulated response based on the transcript length
-            return this.generateSimulatedResponse(message, videoTitle);
+        // Set up message handler for worker
+        this.worker.onmessage = (event) => {
+          const { id, type, data } = event.data;
+          
+          // Handle progress updates
+          if (type === 'progress') {
+            this.updateProgress(
+              data.status,
+              data.progress,
+              data.total,
+              data.detail
+            );
+          }
+          
+          // Handle request completion
+          if (type === 'complete') {
+            const resolver = this.pendingRequests.get(id);
+            if (resolver) {
+              resolver.resolve(data);
+              this.pendingRequests.delete(id);
+            }
+          }
+          
+          // Handle errors
+          if (type === 'error') {
+            const resolver = this.pendingRequests.get(id);
+            if (resolver) {
+              resolver.reject(new Error(data.message));
+              this.pendingRequests.delete(id);
+            }
+            this.updateProgress("error", 0, 100, `Error: ${data.message}`);
           }
         };
         
+        // Initialize the worker
+        const initResult = await this.sendWorkerRequest('initialize', {});
+        
         this.modelLoaded = true;
         this.modelLoading = false;
-        this.updateProgress("ready", 100, 100, "Model loaded successfully");
-        console.log("[YT-Summarizer] Model simulation initialized successfully");
+        this.updateProgress("ready", 100, 100, "AI summarization ready");
+        console.log("[YT-Summarizer] AI summarization system initialized successfully");
       } catch (error) {
         this.modelLoading = false;
         this.updateProgress("error", 0, 100, `Error loading model: ${error.message}`);
-        console.error("[YT-Summarizer] Error loading model:", error);
+        console.error("[YT-Summarizer] Error loading AI model:", error);
         throw error;
       }
     }
@@ -82,17 +90,24 @@ class ModelHandler {
   }
 
   /**
-   * Load an external script
-   * @param {string} src - Script URL
-   * @returns {Promise<void>}
+   * Send a request to the worker and get a promise for the response
+   * @param {string} action - The action to perform
+   * @param {Object} params - The parameters for the action
+   * @returns {Promise<any>} - The result of the action
    */
-  loadScript(src) {
+  sendWorkerRequest(action, params) {
     return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = src;
-      script.onload = resolve;
-      script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
-      document.head.appendChild(script);
+      const id = `req_${this.requestId++}`;
+      
+      // Store the resolvers
+      this.pendingRequests.set(id, { resolve, reject });
+      
+      // Send the request to the worker
+      this.worker.postMessage({
+        action,
+        id,
+        params
+      });
     });
   }
 
@@ -112,7 +127,7 @@ class ModelHandler {
   }
 
   /**
-   * Generate a summary using the Llama model
+   * Generate a summary using the AI model
    * @param {Array} transcript - Transcript segments
    * @param {Object} videoInfo - Video information
    * @returns {Promise<Object>} - Generated summary object
@@ -132,16 +147,16 @@ class ModelHandler {
       this.updateProgress("generating", 0, 100, "Generating summary...");
       
       // Generate the summary
-      const response = await this.llm.chat({
+      const result = await this.sendWorkerRequest('generate', {
         message: prompt,
-        max_gen_len: this.modelConfig.maxTokens,
+        maxTokens: this.modelConfig.maxTokens,
         temperature: this.modelConfig.temperature
       });
       
       this.updateProgress("complete", 100, 100, "Summary generated");
       
       // Process the response into a formatted summary object
-      return this.formatSummaryResponse(response, transcript);
+      return this.formatSummaryResponse(result.response, transcript);
     } catch (error) {
       this.updateProgress("error", 0, 100, `Error generating summary: ${error.message}`);
       console.error("[YT-Summarizer] Error generating summary:", error);
@@ -156,7 +171,7 @@ class ModelHandler {
    * @returns {string} - Formatted prompt
    */
   createSummarizationPrompt(transcriptText, videoInfo) {
-    // Trim transcript if too long (Llama has context limitations)
+    // Trim transcript if too long (context limitations)
     let trimmedTranscript = transcriptText;
     if (transcriptText.length > 6000) {
       trimmedTranscript = transcriptText.substring(0, 2000) + 
@@ -296,43 +311,6 @@ Your summary should be informative and capture the essence of the video content.
     });
     
     return result;
-  }
-
-  /**
-   * Generate a simulated AI response for development
-   * @param {string} prompt - The prompt with transcript
-   * @param {string} videoTitle - The video title
-   * @returns {string} - Simulated AI response
-   */
-  generateSimulatedResponse(prompt, videoTitle) {
-    // Extract some text from the transcript to use in the response
-    const transcriptMatch = prompt.match(/TRANSCRIPT:\s*([^]*?)(?=Please provide|$)/s);
-    const transcript = transcriptMatch ? transcriptMatch[1] : "";
-    
-    // Take a few fragments from different parts of the transcript
-    const words = transcript.split(/\s+/);
-    const fragments = [];
-    
-    if (words.length > 20) {
-      // Get beginning, middle and end fragments
-      fragments.push(words.slice(0, 15).join(" "));
-      fragments.push(words.slice(Math.floor(words.length / 2), Math.floor(words.length / 2) + 15).join(" "));
-      fragments.push(words.slice(words.length - 15).join(" "));
-    } else {
-      fragments.push(transcript);
-    }
-    
-    // Generate a simulated response
-    return `
-Main Topic: ${videoTitle} summarizes ${fragments[0].slice(0, 50)}...
-
-Key Points:
-• ${fragments[0].slice(0, 80)}...
-• ${fragments.length > 1 ? fragments[1].slice(0, 80) : "The video discusses important concepts and ideas."}...
-• ${fragments.length > 2 ? fragments[2].slice(0, 80) : "The speaker concludes with insightful remarks."}...
-
-Conclusion: The video effectively explains ${videoTitle} and provides valuable insights for viewers interested in this topic.
-`;
   }
 }
 
