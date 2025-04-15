@@ -20,6 +20,27 @@ function initializePopup() {
   const summaryContainer = document.getElementById('summary-container');
   const loadingIndicator = document.getElementById('loading-indicator');
   const errorContainer = document.getElementById('error-container');
+  const modelInfo = document.getElementById('model-info');
+  const modelStatusText = document.getElementById('model-status-text');
+  const modelProgressValue = document.getElementById('model-progress-value');
+  
+  // Initialize model progress event listener
+  window.addEventListener('model-progress', (event) => {
+    const progress = event.detail;
+    modelInfo.style.display = 'block';
+    modelStatusText.textContent = progress.detail;
+    
+    // Update progress bar
+    const percentage = Math.round((progress.progress / progress.total) * 100);
+    modelProgressValue.style.width = `${percentage}%`;
+    
+    if (progress.status === 'ready' || progress.status === 'complete') {
+      // Hide after a delay when complete
+      setTimeout(() => {
+        modelInfo.style.display = 'none';
+      }, 3000);
+    }
+  });
   
   // Set up event listeners
   summarizeButton.addEventListener('click', handleSummarizeClick);
@@ -54,6 +75,21 @@ function initializePopup() {
         }
       }
     });
+  }
+  
+  // Preload model in background for faster summarization
+  if (window.ModelHandler) {
+    setTimeout(() => {
+      try {
+        // Start loading model in background
+        window.ModelHandler.initialize().catch(err => {
+          console.log('[YT-Summarizer] Background model loading error:', err);
+          // Non-critical error, don't show to user
+        });
+      } catch (e) {
+        console.log('[YT-Summarizer] Error preloading model:', e);
+      }
+    }, 1000);
   }
 }
 
@@ -112,8 +148,8 @@ async function handleSummarizeClick() {
       throw new Error('Could not retrieve transcript. This video might not have captions available.');
     }
     
-    // Create summary
-    loadingIndicator.textContent = 'Generating summary...';
+    // Create summary using AI
+    loadingIndicator.textContent = 'Generating AI summary...';
     const summary = await createSummary(transcript, videoId);
     
     // Display summary
@@ -274,82 +310,53 @@ async function createSummary(transcript, videoId) {
       throw new Error('Empty transcript, cannot create summary');
     }
     
-    // Use TranscriptParser utility on window object if available
-    if (window.TranscriptParser && typeof window.TranscriptParser.createSummary === 'function') {
-      return window.TranscriptParser.createSummary(transcript, videoId);
-    }
+    const loadingIndicator = document.getElementById('loading-indicator');
     
-    // Fallback implementation - create a basic summary from transcript segments
-    console.log('[YT-Summarizer] TranscriptParser not available, using fallback');
-    
-    // Sort transcript by timestamp
-    const sortedTranscript = [...transcript].sort((a, b) => a.seconds - b.seconds);
-    
-    // Get segments from beginning, middle, and end
-    const totalSegments = sortedTranscript.length;
-    const segmentsToUse = Math.min(15, Math.floor(totalSegments / 3));
-    
-    const beginningSegments = sortedTranscript.slice(0, segmentsToUse);
-    const middleStart = Math.floor((totalSegments - segmentsToUse) / 2);
-    const middleSegments = sortedTranscript.slice(middleStart, middleStart + segmentsToUse);
-    const endSegments = sortedTranscript.slice(-segmentsToUse);
-    
-    // Combine segments
-    const summarySegments = [
-      ...beginningSegments,
-      ...middleSegments,
-      ...endSegments
-    ].sort((a, b) => a.seconds - b.seconds);
-    
-    // Merge consecutive segments into paragraphs
-    const paragraphs = [];
-    let currentParagraph = {
-      text: '',
-      timestamp: '',
-      seconds: 0
-    };
-    
-    summarySegments.forEach((segment, index) => {
-      if (index > 0 && index % 5 === 0) {
-        // Start a new paragraph every 5 segments
-        if (currentParagraph.text.trim()) {
-          paragraphs.push({ ...currentParagraph });
-        }
-        currentParagraph = {
-          text: segment.text,
-          timestamp: segment.timestamp,
-          seconds: segment.seconds
-        };
-      } else {
-        // Add to current paragraph
-        currentParagraph.text += ' ' + segment.text;
+    // Use AI summarization with ModelHandler from Phase 2
+    try {
+      // First get video info for better summarization
+      loadingIndicator.textContent = 'Getting video information...';
+      const videoInfo = await window.YouTubeAPI.getVideoInfo(videoId);
+      
+      // Initialize the model (will show progress in UI)
+      loadingIndicator.textContent = 'Loading AI model...';
+      const modelHandler = window.ModelHandler;
+      
+      // Listen for model progress updates to show in UI
+      window.addEventListener('model-progress', (event) => {
+        const progress = event.detail;
+        loadingIndicator.textContent = progress.detail;
+      }, { once: false });
+      
+      // Wait for model to load
+      if (!modelHandler.modelLoaded) {
+        await modelHandler.initialize();
       }
       
-      // Add the last paragraph
-      if (index === summarySegments.length - 1 && currentParagraph.text.trim()) {
-        paragraphs.push({ ...currentParagraph });
+      // Generate summary with AI
+      loadingIndicator.textContent = 'Generating AI summary...';
+      const aiSummary = await modelHandler.generateSummary(transcript, videoInfo);
+      
+      // Parse the structured summary returned from AI
+      return {
+        title: videoInfo.title || 'Video Summary',
+        videoId: videoId,
+        sections: aiSummary.sections,
+        useAI: true,
+        timestamp: new Date().toISOString()
+      };
+    } catch (aiError) {
+      console.error('[YT-Summarizer] AI summarization failed:', aiError);
+      loadingIndicator.textContent = 'AI summarization failed, using fallback method...';
+      
+      // Fallback to TranscriptParser if AI fails
+      if (window.TranscriptParser && typeof window.TranscriptParser.createSummary === 'function') {
+        return window.TranscriptParser.createSummary(transcript, videoId);
       }
-    });
-    
-    return {
-      title: 'Video Summary',
-      sections: [
-        {
-          title: 'Introduction',
-          paragraphs: paragraphs.slice(0, Math.ceil(paragraphs.length / 3))
-        },
-        {
-          title: 'Main Points',
-          paragraphs: paragraphs.slice(Math.ceil(paragraphs.length / 3), Math.ceil(paragraphs.length * 2 / 3))
-        },
-        {
-          title: 'Conclusion',
-          paragraphs: paragraphs.slice(Math.ceil(paragraphs.length * 2 / 3))
-        }
-      ],
-      videoId: videoId,
-      timestamp: new Date().toISOString()
-    };
+      
+      // If all else fails, use very basic summary approach
+      throw new Error('AI summarization failed and no fallback available');
+    }
   } catch (error) {
     console.error('[YT-Summarizer] Error creating summary:', error);
     throw error;
@@ -375,7 +382,14 @@ function displaySummary(summary) {
   // Create summary header
   const header = document.createElement('div');
   header.className = 'summary-header';
-  header.innerHTML = `<h2>${summary.title || 'Video Summary'}</h2>`;
+  
+  // Add AI badge if summary was generated with AI
+  if (summary.useAI) {
+    header.innerHTML = `<h2>${summary.title || 'Video Summary'} <span class="ai-badge">AI</span></h2>`;
+  } else {
+    header.innerHTML = `<h2>${summary.title || 'Video Summary'}</h2>`;
+  }
+  
   summaryContainer.appendChild(header);
   
   // Create summary content

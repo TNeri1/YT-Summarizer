@@ -66,14 +66,16 @@ class ModelHandler {
         this.modelLoaded = true;
         this.modelLoading = false;
         this.updateProgress("ready", 100, 100, "Model loaded successfully");
-        console.log("Llama model loaded successfully");
+        console.log("[YT-Summarizer] Llama model loaded successfully");
       } catch (error) {
         this.modelLoading = false;
         this.updateProgress("error", 0, 100, `Error loading model: ${error.message}`);
-        console.error("Error loading Llama model:", error);
+        console.error("[YT-Summarizer] Error loading Llama model:", error);
         throw error;
       }
     }
+    
+    return this;
   }
 
   /**
@@ -110,7 +112,7 @@ class ModelHandler {
    * Generate a summary using the Llama model
    * @param {Array} transcript - Transcript segments
    * @param {Object} videoInfo - Video information
-   * @returns {Promise<string>} - Generated summary
+   * @returns {Promise<Object>} - Generated summary object
    */
   async generateSummary(transcript, videoInfo) {
     if (!this.modelLoaded) {
@@ -135,11 +137,11 @@ class ModelHandler {
       
       this.updateProgress("complete", 100, 100, "Summary generated");
       
-      // Process the response into a nicely formatted HTML summary
-      return this.formatSummaryResponse(response, videoInfo, transcript);
+      // Process the response into a formatted summary object
+      return this.formatSummaryResponse(response, transcript);
     } catch (error) {
       this.updateProgress("error", 0, 100, `Error generating summary: ${error.message}`);
-      console.error("Error generating summary:", error);
+      console.error("[YT-Summarizer] Error generating summary:", error);
       throw error;
     }
   }
@@ -163,7 +165,7 @@ class ModelHandler {
 You are a helpful assistant that summarizes YouTube video transcripts.
 
 VIDEO TITLE: ${videoInfo.title || "YouTube Video"}
-VIDEO URL: ${videoInfo.url || ""}
+VIDEO URL: ${videoInfo.url || "https://youtube.com/watch?v=" + videoInfo.id}
 
 TRANSCRIPT:
 ${trimmedTranscript}
@@ -179,13 +181,12 @@ Your summary should be informative and capture the essence of the video content.
   }
 
   /**
-   * Format the model's response into HTML
+   * Format the model's response into a structured summary object
    * @param {string} response - Model response
-   * @param {Object} videoInfo - Video information
    * @param {Array} transcript - Original transcript with timestamps
-   * @returns {string} - Formatted HTML
+   * @returns {Object} - Formatted summary object
    */
-  formatSummaryResponse(response, videoInfo, transcript) {
+  formatSummaryResponse(response, transcript) {
     // Extract the parts of the response
     const mainTopicMatch = response.match(/(?:Main Topic:?|1\.)(.*?)(?=Key Points|2\.)/is);
     const keyPointsMatch = response.match(/(?:Key Points:?|2\.)(.*?)(?=Conclusion|3\.)/is);
@@ -196,106 +197,105 @@ Your summary should be informative and capture the essence of the video content.
     const conclusion = conclusionMatch ? conclusionMatch[1].trim() : "";
     
     // Extract bullet points
-    const bulletPoints = keyPoints.split(/•|\-|\*/).map(p => p.trim()).filter(p => p);
+    const bulletPoints = keyPoints.split(/[•\-\*\d+\.\s]/).map(p => p.trim()).filter(p => p);
     
     // Try to match key points with timestamps from the transcript
-    const pointsWithTimestamps = bulletPoints.map(point => {
-      // Look for related segments in the transcript
-      const relatedSegment = this.findRelatedSegment(point, transcript);
-      if (relatedSegment) {
-        return {
-          text: point,
-          timestamp: relatedSegment.timestamp,
-          seconds: relatedSegment.seconds
-        };
+    const timestampedPoints = this.addTimestampsToPoints(bulletPoints, transcript);
+    
+    // Find timestamps for introduction and conclusion
+    const firstTimestamp = transcript.length > 0 ? transcript[0] : null;
+    const lastTimestamp = transcript.length > 0 ? transcript[transcript.length - 1] : null;
+    
+    // Create sections with paragraphs in the format expected by popup.js
+    const sections = [
+      {
+        title: "Main Topic",
+        paragraphs: [{
+          text: mainTopic,
+          timestamp: firstTimestamp ? firstTimestamp.timestamp : null,
+          seconds: firstTimestamp ? firstTimestamp.seconds : 0
+        }]
+      },
+      {
+        title: "Key Points",
+        paragraphs: timestampedPoints.map(point => ({
+          text: point.text,
+          timestamp: point.timestamp,
+          seconds: point.seconds
+        }))
+      },
+      {
+        title: "Conclusion",
+        paragraphs: [{
+          text: conclusion,
+          timestamp: lastTimestamp ? lastTimestamp.timestamp : null,
+          seconds: lastTimestamp ? lastTimestamp.seconds : 0
+        }]
       }
-      return { text: point, timestamp: "", seconds: 0 };
-    });
+    ];
     
-    // Format as HTML
-    let html = `<h3>Summary of "${videoInfo.title || 'YouTube Video'}"</h3>`;
-    
-    if (videoInfo.channel) {
-      html += `<p><small>Channel: ${videoInfo.channel}</small></p>`;
-    }
-    
-    if (videoInfo.duration) {
-      html += `<p><small>Duration: ${this.formatDuration(videoInfo.duration)}</small></p>`;
-    }
-    
-    html += `<p>${mainTopic}</p>`;
-    
-    html += `<h4>Key Points</h4><ul>`;
-    pointsWithTimestamps.forEach(point => {
-      const timestampHtml = point.timestamp 
-        ? `<span class="timestamp" data-seconds="${point.seconds}">[${point.timestamp}]</span> ` 
-        : '';
-      html += `<li>${timestampHtml}${point.text}</li>`;
-    });
-    html += `</ul>`;
-    
-    if (conclusion) {
-      html += `<h4>Conclusion</h4><p>${conclusion}</p>`;
-    }
-    
-    return html;
+    return {
+      sections: sections
+    };
   }
-
+  
   /**
-   * Find a transcript segment related to a key point
-   * @param {string} point - Key point text
-   * @param {Array} transcript - Transcript segments
-   * @returns {Object|null} - Related segment or null
+   * Add timestamps to key points by matching content with transcript
+   * @param {Array<string>} points - Key points from AI summary
+   * @param {Array<Object>} transcript - Original transcript with timestamps
+   * @returns {Array<Object>} - Key points with timestamps
    */
-  findRelatedSegment(point, transcript) {
-    // Simple word matching to find most relevant segment
-    const words = point.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-    let bestMatch = null;
-    let bestScore = 0;
+  addTimestampsToPoints(points, transcript) {
+    const result = [];
     
-    transcript.forEach(segment => {
-      const segmentText = segment.text.toLowerCase();
-      let score = 0;
+    // Create a flat text version of the transcript
+    const flatTranscript = transcript.map(t => t.text.toLowerCase()).join(' ');
+    
+    // For each point, try to find where it appears in the transcript
+    points.forEach(point => {
+      const pointObj = {
+        text: point,
+        timestamp: null,
+        seconds: 0
+      };
       
-      words.forEach(word => {
-        if (segmentText.includes(word)) {
-          score++;
+      // Find keywords in the point (words of 5+ chars)
+      const keywords = point.toLowerCase()
+        .split(/\s+/)
+        .filter(word => word.length >= 5)
+        .map(word => word.replace(/[.,;!?()]/g, ''));
+      
+      if (keywords.length > 0) {
+        // Look for these keywords in the transcript
+        let bestMatchIndex = -1;
+        let bestMatchCount = 0;
+        
+        // Check each transcript segment for keywords
+        transcript.forEach((segment, index) => {
+          const lowercaseText = segment.text.toLowerCase();
+          const matchCount = keywords.filter(keyword => 
+            lowercaseText.includes(keyword)).length;
+          
+          if (matchCount > bestMatchCount) {
+            bestMatchCount = matchCount;
+            bestMatchIndex = index;
+          }
+        });
+        
+        // If we found a good match, use its timestamp
+        if (bestMatchIndex >= 0 && bestMatchCount >= Math.min(2, keywords.length)) {
+          pointObj.timestamp = transcript[bestMatchIndex].timestamp;
+          pointObj.seconds = transcript[bestMatchIndex].seconds;
         }
-      });
-      
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = segment;
       }
+      
+      result.push(pointObj);
     });
     
-    // Return if we have a reasonable match
-    if (bestScore >= Math.min(2, words.length * 0.3)) {
-      return bestMatch;
-    }
-    
-    return null;
-  }
-
-  /**
-   * Format duration in seconds as HH:MM:SS
-   * @param {number} seconds - Duration in seconds
-   * @returns {string} - Formatted duration
-   */
-  formatDuration(seconds) {
-    if (!seconds) return 'Unknown';
-    
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    } else {
-      return `${minutes}:${secs.toString().padStart(2, '0')}`;
-    }
+    return result;
   }
 }
 
 // Create and export a singleton instance
-const modelHandler = new ModelHandler();
+window.ModelHandler = new ModelHandler();
+console.log("[YT-Summarizer] Model handler initialized");

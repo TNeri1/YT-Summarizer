@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YT-Summarizer",
-  "version": "1.0.0",
-  "description": "Automatically generates concise summaries of YouTube videos",
+  "version": "2.0.0",
+  "description": "Automatically generates concise summaries of YouTube videos using AI",
   "permissions": [
     "activeTab",
     "storage",
@@ -11,7 +11,9 @@
     "scripting"
   ],
   "host_permissions": [
-    "*://*.youtube.com/*"
+    "*://*.youtube.com/*",
+    "https://cdn.jsdelivr.net/*",
+    "https://mlc.ai/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -35,5 +37,8 @@
       "js": ["content/content.js"],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' https://cdn.jsdelivr.net; object-src 'self'"
+  }
 }
