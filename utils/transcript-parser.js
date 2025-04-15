@@ -1,149 +1,223 @@
 /**
  * Transcript Parser Utilities
- * Handles transcript retrieval and processing
+ * 
+ * Handles transcript retrieval, parsing, and summary generation
  */
 
-// Create a namespace for the transcript parser utilities
+// Define TranscriptParser namespace on window object
 window.TranscriptParser = {};
 
-// Get transcript from YouTube page via content script
-window.TranscriptParser.getTranscript = async function(videoId) {
-  console.log('Getting transcript for video:', videoId);
-  
+// Cache for storing transcript summaries
+const transcriptCache = {};
+
+/**
+ * Get transcript for a YouTube video
+ * @param {string} videoId - YouTube video ID
+ * @returns {Promise<Array>} - Transcript segments
+ */
+window.TranscriptParser.getTranscript = function(videoId) {
   return new Promise((resolve, reject) => {
+    console.log('[YT-Summarizer] Requesting transcript for', videoId);
+    
+    if (!videoId) {
+      reject(new Error('Video ID is required'));
+      return;
+    }
+    
+    // Check cache first
+    if (transcriptCache[videoId] && transcriptCache[videoId].transcript) {
+      console.log('[YT-Summarizer] Using cached transcript');
+      resolve(transcriptCache[videoId].transcript);
+      return;
+    }
+    
+    // Try to get transcript from content script
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      chrome.tabs.sendMessage(tabs[0].id, {
+      if (!tabs || tabs.length === 0) {
+        reject(new Error('No active tab found'));
+        return;
+      }
+      
+      const currentTab = tabs[0];
+      
+      console.log('[YT-Summarizer] Sending transcript request to tab', currentTab.id);
+      
+      chrome.tabs.sendMessage(currentTab.id, {
         action: 'getTranscript',
         videoId: videoId
       }, function(response) {
+        // Handle communication errors
         if (chrome.runtime.lastError) {
-          console.error('Error getting transcript:', chrome.runtime.lastError);
-          reject(new Error(`Failed to get transcript: ${chrome.runtime.lastError.message}`));
+          console.error('[YT-Summarizer] Error getting transcript:', chrome.runtime.lastError);
+          reject(new Error('Failed to get transcript: Could not establish connection. Receiving end does not exist.'));
           return;
         }
         
-        if (!response) {
-          console.error('No response from content script');
-          reject(new Error('Failed to get transcript: No response from content script'));
-          return;
+        // Handle transcript response
+        if (response && response.transcript) {
+          // Cache the transcript
+          if (!transcriptCache[videoId]) {
+            transcriptCache[videoId] = {};
+          }
+          
+          transcriptCache[videoId].transcript = response.transcript;
+          resolve(response.transcript);
+        } else if (response && response.error) {
+          reject(new Error(response.error));
+        } else {
+          reject(new Error('Unknown error getting transcript'));
         }
-        
-        if (response.error) {
-          console.error('Transcript error:', response.error);
-          reject(new Error(`Failed to get transcript: ${response.error}`));
-          return;
-        }
-        
-        if (!response.transcript || !Array.isArray(response.transcript)) {
-          console.error('Invalid transcript format:', response);
-          reject(new Error('Failed to get transcript: Invalid format'));
-          return;
-        }
-        
-        console.log(`Received transcript with ${response.transcript.length} segments`);
-        resolve(response.transcript);
       });
     });
   });
 };
 
-// Create a basic summary from transcript segments
-window.TranscriptParser.createBasicSummary = function(transcript, videoInfo) {
-  console.log('Creating basic summary');
+/**
+ * Create summary from transcript segments
+ * @param {Array} transcript - Transcript segments
+ * @param {string} videoId - Video ID for reference
+ * @returns {Object} - Summary object
+ */
+window.TranscriptParser.createSummary = function(transcript, videoId) {
+  console.log('[YT-Summarizer] Creating summary from transcript segments:', transcript.length);
   
-  if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
-    throw new Error('Invalid transcript data');
+  if (!transcript || transcript.length === 0) {
+    throw new Error('Empty transcript');
   }
   
-  // Get beginning, middle, and end segments
-  const beginning = transcript.slice(0, Math.min(3, transcript.length));
-  const middleStart = Math.floor(transcript.length / 2) - 1;
-  const middle = transcript.slice(
-    Math.max(0, middleStart),
-    Math.min(middleStart + 3, transcript.length)
-  );
-  const end = transcript.slice(
-    Math.max(0, transcript.length - 3),
-    transcript.length
-  );
+  // Sort transcript by timestamp
+  const sortedTranscript = [...transcript].sort((a, b) => a.seconds - b.seconds);
   
-  console.log(`Got: ${beginning.length} beginning, ${middle.length} middle, ${end.length} end segments`);
+  // Get segments from beginning, middle, and end
+  const totalSegments = sortedTranscript.length;
+  const segmentsToUse = Math.min(15, Math.floor(totalSegments / 3));
   
-  // Format HTML
-  let html = `<h3>Summary of "${videoInfo.title || 'YouTube Video'}"</h3>`;
+  const beginningSegments = sortedTranscript.slice(0, segmentsToUse);
+  const middleStart = Math.floor((totalSegments - segmentsToUse) / 2);
+  const middleSegments = sortedTranscript.slice(middleStart, middleStart + segmentsToUse);
+  const endSegments = sortedTranscript.slice(-segmentsToUse);
   
-  if (videoInfo.channel) {
-    html += `<p><small>Channel: ${videoInfo.channel}</small></p>`;
-  }
+  // Combine segments
+  const summarySegments = [
+    ...beginningSegments,
+    ...middleSegments,
+    ...endSegments
+  ].sort((a, b) => a.seconds - b.seconds);
   
-  if (videoInfo.duration) {
-    html += `<p><small>Duration: ${window.YouTubeAPI.formatDuration(videoInfo.duration)}</small></p>`;
-  }
+  // Merge consecutive segments into paragraphs
+  const paragraphs = [];
+  let currentParagraph = {
+    text: '',
+    timestamp: '',
+    seconds: 0
+  };
   
-  html += `<div class="summary-section">
-    <h4>Introduction</h4>
-    <ul>`;
-  
-  beginning.forEach(segment => {
-    html += `<li><span class="timestamp" data-seconds="${segment.seconds}">[${segment.timestamp}]</span> ${segment.text}</li>`;
-  });
-  
-  html += `</ul>
-    <h4>Main Points</h4>
-    <ul>`;
-  
-  middle.forEach(segment => {
-    html += `<li><span class="timestamp" data-seconds="${segment.seconds}">[${segment.timestamp}]</span> ${segment.text}</li>`;
-  });
-  
-  html += `</ul>
-    <h4>Conclusion</h4>
-    <ul>`;
-  
-  end.forEach(segment => {
-    html += `<li><span class="timestamp" data-seconds="${segment.seconds}">[${segment.timestamp}]</span> ${segment.text}</li>`;
-  });
-  
-  html += `</ul></div>`;
-  
-  console.log('Summary HTML created');
-  return html;
-};
-
-// Cache management for summaries
-window.TranscriptParser.getCachedSummary = async function(videoId) {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(['summaryCache'], function(result) {
-      const cache = result.summaryCache || {};
-      if (cache[videoId]) {
-        resolve(cache[videoId]);
-      } else {
-        resolve(null);
+  summarySegments.forEach((segment, index) => {
+    if (index > 0 && index % 5 === 0) {
+      // Start a new paragraph every 5 segments
+      if (currentParagraph.text.trim()) {
+        paragraphs.push({ ...currentParagraph });
       }
-    });
+      currentParagraph = {
+        text: segment.text,
+        timestamp: segment.timestamp,
+        seconds: segment.seconds
+      };
+    } else {
+      // Add to current paragraph
+      currentParagraph.text += ' ' + segment.text;
+    }
+    
+    // Add the last paragraph
+    if (index === summarySegments.length - 1 && currentParagraph.text.trim()) {
+      paragraphs.push({ ...currentParagraph });
+    }
+  });
+  
+  // Create summary object
+  const summary = {
+    title: 'Video Summary',
+    videoId: videoId,
+    sections: [
+      {
+        title: 'Introduction',
+        paragraphs: paragraphs.slice(0, Math.ceil(paragraphs.length / 3))
+      },
+      {
+        title: 'Main Points',
+        paragraphs: paragraphs.slice(Math.ceil(paragraphs.length / 3), Math.ceil(paragraphs.length * 2 / 3))
+      },
+      {
+        title: 'Conclusion',
+        paragraphs: paragraphs.slice(Math.ceil(paragraphs.length * 2 / 3))
+      }
+    ],
+    timestamp: new Date().toISOString()
+  };
+  
+  // Cache the summary
+  if (!transcriptCache[videoId]) {
+    transcriptCache[videoId] = {};
+  }
+  
+  transcriptCache[videoId].summary = summary;
+  
+  return summary;
+};
+
+/**
+ * Get cached summary for a video
+ * @param {string} videoId - YouTube video ID
+ * @returns {Promise<Object>} - Cached summary if available
+ */
+window.TranscriptParser.getCachedSummary = function(videoId) {
+  return new Promise((resolve) => {
+    if (transcriptCache[videoId] && transcriptCache[videoId].summary) {
+      resolve(transcriptCache[videoId].summary);
+    } else {
+      // Also check Chrome storage for persistent cache
+      chrome.storage.local.get(['summaryCache'], function(result) {
+        if (result.summaryCache && result.summaryCache[videoId]) {
+          // Update in-memory cache
+          if (!transcriptCache[videoId]) {
+            transcriptCache[videoId] = {};
+          }
+          transcriptCache[videoId].summary = result.summaryCache[videoId];
+          
+          resolve(result.summaryCache[videoId]);
+        } else {
+          resolve(null);
+        }
+      });
+    }
   });
 };
 
-window.TranscriptParser.saveToCache = function(videoId, videoInfo, summary) {
-  // Update cache
+/**
+ * Save summary to cache
+ * @param {string} videoId - YouTube video ID
+ * @param {Object} summary - Summary object
+ */
+window.TranscriptParser.saveToCache = function(videoId, summary) {
+  if (!videoId || !summary) return;
+  
+  // Save to in-memory cache
+  if (!transcriptCache[videoId]) {
+    transcriptCache[videoId] = {};
+  }
+  
+  transcriptCache[videoId].summary = summary;
+  
+  // Save to Chrome storage for persistence
   chrome.storage.local.get(['summaryCache'], function(result) {
     const cache = result.summaryCache || {};
+    cache[videoId] = summary;
     
-    // Add to cache with expiration (7 days)
-    cache[videoId] = {
-      videoInfo: videoInfo,
-      summary: summary,
-      timestamp: Date.now(),
-      expiration: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
-    };
-    
-    // Clean up expired items
-    Object.keys(cache).forEach(key => {
-      if (cache[key].expiration < Date.now()) {
-        delete cache[key];
-      }
+    chrome.storage.local.set({summaryCache: cache}, function() {
+      console.log('[YT-Summarizer] Summary saved to cache');
     });
-    
-    chrome.storage.local.set({'summaryCache': cache});
   });
 };
+
+// Log that the transcript parser utilities are loaded
+console.log('[YT-Summarizer] Transcript parser utilities loaded');
